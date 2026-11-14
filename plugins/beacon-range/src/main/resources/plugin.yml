@@ -1,0 +1,15 @@
+name: BeaconRange
+version: 1.0.0
+main: com.sofiavarna.beaconrange.BeaconRangePlugin
+api-version: '26.3'
+description: Sets beacon effect range by pyramid tier
+author: SofiaVarna
+commands:
+  beaconrange:
+    description: Show or reload beacon tier ranges
+    usage: /beaconrange [reload]
+    permission: beaconrange.admin
+permissions:
+  beaconrange.admin:
+    description: View and reload beacon ranges
+    default: op

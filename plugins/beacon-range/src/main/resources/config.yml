@@ -1,0 +1,9 @@
+# Effect radius in blocks for each pyramid level.
+# Vanilla is 20, 30, 40, and 50.
+# A beacon only refreshes its buff while its chunk is ticking.
+# Simulation distance 8 stops that refresh past 128 blocks.
+range:
+  tier1: 45
+  tier2: 70
+  tier3: 100
+  tier4: 128
