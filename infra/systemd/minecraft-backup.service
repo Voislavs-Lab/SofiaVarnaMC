@@ -1,0 +1,10 @@
+[Unit]
+Description=SofiaVarna local backup
+After=network-online.target
+ConditionPathExists=/usr/local/sbin/minecraft-backup
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/minecraft-backup create
+Nice=10
+TimeoutStartSec=30min

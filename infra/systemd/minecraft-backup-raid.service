@@ -1,0 +1,10 @@
+[Unit]
+Description=SofiaVarna RAID backup replicate
+After=network-online.target
+ConditionPathExists=/usr/local/sbin/minecraft-backup
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/minecraft-backup replicate-raid
+Nice=10
+TimeoutStartSec=30min

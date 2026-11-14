@@ -1,0 +1,735 @@
+#!/bin/bash
+# SofiaVarna backups for Proxmox CT 111.
+# create freezes the world once. replicate-raid and replicate-gdrive copy that archive.
+set -euo pipefail
+umask 077
+
+CONF=/etc/minecraft-backup.conf
+# shellcheck source=/etc/minecraft-backup.conf
+source "$CONF"
+
+INCLUDES=(
+  world
+  plugins
+  config
+  libraries
+  versions
+  server.jar
+  server-vanilla-26.3.jar
+  server-icon.png
+  server.properties
+  bukkit.yml
+  spigot.yml
+  commands.yml
+  eula.txt
+  ops.json
+  whitelist.json
+  banned-ips.json
+  banned-players.json
+  usercache.json
+)
+
+saves_off=0
+stage_tar=""
+stage_zst=""
+tmp_cleanup=""
+
+log() {
+  local msg="$*"
+  mkdir -p "$(dirname "$HISTORY_LOG")"
+  touch "$HISTORY_LOG"
+  chmod 600 "$HISTORY_LOG"
+  printf '%s %s\n' "$(date -Iseconds)" "$msg" | tee -a "$HISTORY_LOG" >&2
+}
+
+fail() {
+  log "ERROR: $*"
+  exit 1
+}
+
+on_exit() {
+  local rc=$?
+  if [[ "$saves_off" == 1 ]]; then
+    local response=""
+    if response=$(rcon "save-on"); then
+      saves_off=0
+      log "save-on during cleanup: ${response//$'\n'/ }"
+    else
+      log "ERROR save-on failed during cleanup: ${response//$'\n'/ }"
+      rc=1
+    fi
+  fi
+  if [[ -n "$tmp_cleanup" && -d "$tmp_cleanup" ]]; then
+    rm -rf "$tmp_cleanup"
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    rm -f "$stage_tar" "$stage_zst"
+    rm -rf "${LOCAL_DIR:-}/.incoming" "${RAID_DIR:-}/.incoming"
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 143' TERM INT
+
+rcon() {
+  local cmd=$1
+  pct exec "$CTID" -- bash -c '
+    set +x
+    set -eu
+    pw=$(sed -n "s/^rcon.password=//p" /opt/minecraft/server.properties)
+    [[ -n "$pw" ]]
+    export MCRCON_HOST=127.0.0.1
+    export MCRCON_PORT=25575
+    export MCRCON_PASS="$pw"
+    exec /usr/local/bin/mcrcon -c "$1"
+  ' _ "$cmd"
+}
+
+rcon_ok() {
+  local cmd=$1
+  local re=$2
+  local response=""
+  local rc=0
+  response=$(rcon "$cmd") || rc=$?
+  if [[ "$cmd" == "save-off" && "$rc" -eq 0 ]]; then
+    saves_off=1
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    fail "rcon ${cmd} failed: ${response//$'\n'/ }"
+  fi
+  if ! printf '%s\n' "$response" | grep -Eiq -- "$re"; then
+    fail "rcon ${cmd} unexpected: ${response//$'\n'/ }"
+  fi
+  log "rcon ${cmd}: ${response//$'\n'/ }"
+}
+
+ensure_dirs() {
+  mkdir -p "$LOCAL_DIR" "$LOCAL_DIR/.incoming" "$RAID_DIR"
+  chmod 700 "$LOCAL_DIR" "$RAID_DIR" "$LOCAL_DIR/.incoming"
+  touch "$HISTORY_LOG"
+  chmod 600 "$HISTORY_LOG"
+}
+
+ct_running() {
+  local st
+  st=$(pct status "$CTID")
+  [[ "$st" == "status: running" ]]
+}
+
+service_state() {
+  pct exec "$CTID" -- systemctl is-active minecraft.service || true
+}
+
+free_kib() {
+  df -Pk "$1" | awk 'NR==2 {print $4}'
+}
+
+archive_basenames() {
+  local dir=$1
+  find "$dir" -maxdepth 1 -type f -name 'sofia-varna-*.tar.zst' -printf '%f\n' | sort
+}
+
+newest_basename() {
+  archive_basenames "$1" | tail -n 1
+}
+
+sweep_incomplete() {
+  local dir=$1
+  local base stem
+  while IFS= read -r base; do
+    [[ -n "$base" ]] || continue
+    stem=${base%.tar.zst}
+    if [[ ! -f "$dir/$base.sha256" || ! -f "$dir/$stem.manifest.txt" ]]; then
+      log "removing incomplete $dir/$base"
+      rm -f "$dir/$base" "$dir/$base.sha256" "$dir/$stem.manifest.txt"
+    fi
+  done < <(archive_basenames "$dir")
+}
+
+prune_dir() {
+  local dir=$1
+  local keep=$2
+  local -a files=()
+  local base stem count remove i
+  while IFS= read -r base; do
+    [[ -n "$base" ]] || continue
+    files+=("$base")
+  done < <(archive_basenames "$dir")
+  count=${#files[@]}
+  remove=$((count - keep))
+  for ((i = 0; i < remove; i++)); do
+    if ((count - i <= 1)); then
+      break
+    fi
+    base=${files[$i]}
+    stem=${base%.tar.zst}
+    rm -f "$dir/$base" "$dir/$base.sha256" "$dir/$stem.manifest.txt"
+    log "pruned $dir/$base"
+  done
+}
+
+require_phrase_in_tar() {
+  local list=$1
+  local phrase=$2
+  if ! grep -qx -- "$phrase" "$list" && ! grep -q -- "^${phrase}/" "$list"; then
+    fail "archive missing ${phrase}"
+  fi
+}
+
+write_manifest() {
+  local path=$1
+  local mode=$2
+  local hash=$3
+  local world_bytes=$4
+  local java_ver=$5
+  local plugins=$6
+  local paper_ver=$7
+  local entries=$8
+  local name=$9
+  {
+    echo "name: $name"
+    echo "created: $(date -Iseconds)"
+    echo "host: $(hostname)"
+    echo "ctid: $CTID"
+    echo "mode: $mode"
+    echo "sha256: $hash"
+    echo "world_bytes_before_flush: $world_bytes"
+    echo "tar_entries: $entries"
+    echo "java: $java_ver"
+    echo "paper_version_json: $paper_ver"
+    echo "plugins:"
+    printf '%s\n' "$plugins" | sed '/^$/d; s/^/  /'
+    echo "included:"
+    printf '  %s\n' "${INCLUDES[@]}"
+    echo "excluded: logs crash-reports cache .cache .config .local .paper .minecraft session.lock /opt/headlessmc"
+    echo
+    echo "===== /etc/pve/lxc/${CTID}.conf ====="
+    cat "/etc/pve/lxc/${CTID}.conf"
+    echo
+    echo "===== minecraft.service ====="
+    pct exec "$CTID" -- cat /etc/systemd/system/minecraft.service
+  } >"$path"
+}
+
+release_saves() {
+  local response=""
+  if [[ "$saves_off" != 1 ]]; then
+    return 0
+  fi
+  response=$(rcon "save-on") || fail "save-on failed: ${response//$'\n'/ }"
+  if ! printf '%s\n' "$response" | grep -Eiq -- 'enabled|turned on'; then
+    fail "save-on unexpected: ${response//$'\n'/ }"
+  fi
+  saves_off=0
+  log "rcon save-on: ${response//$'\n'/ }"
+}
+
+do_create() {
+  local state mode world_bytes java_ver plugins paper_ver
+  local stamp stem base listfile entries hash arch_bytes
+  local manifest_tmp sha_tmp
+
+  ensure_dirs
+  sweep_incomplete "$LOCAL_DIR"
+  rm -rf "$LOCAL_DIR/.incoming"
+  mkdir -p "$LOCAL_DIR/.incoming"
+  chmod 700 "$LOCAL_DIR/.incoming"
+
+  local avail
+  avail=$(free_kib "$LOCAL_DIR")
+  if ((avail < LOCAL_MIN_FREE_KIB)); then
+    fail "pve-root free ${avail} KiB is below ${LOCAL_MIN_FREE_KIB}"
+  fi
+  ct_running || fail "CT ${CTID} is not running"
+
+  state=$(service_state)
+  case "$state" in
+    active) mode=hot ;;
+    inactive) mode=cold ;;
+    *) fail "minecraft.service state is ${state}" ;;
+  esac
+
+  world_bytes=$(pct exec "$CTID" -- du -sb "$MINECRAFT_ROOT/world" | awk '{print $1}')
+  java_ver=$(pct exec "$CTID" -- bash -c 'java -version 2>&1 | head -n 1' || true)
+  plugins=$(pct exec "$CTID" -- bash -c 'find /opt/minecraft/plugins -maxdepth 1 -name "*.jar" -printf "%f\n" | sort' || true)
+  paper_ver=$(pct exec "$CTID" -- python3 -c 'import zipfile; print(zipfile.ZipFile("/opt/minecraft/server.jar").read("version.json").decode()[:500])' 2>/dev/null || true)
+
+  if [[ "$mode" == hot ]]; then
+    rcon_ok "save-on" 'enabled|turned on'
+    rcon_ok "save-off" 'disabled|turned off'
+    rcon_ok "save-all flush" 'Saved'
+  else
+    log "minecraft.service is inactive; taking a cold archive"
+  fi
+
+  stamp=$(date +%Y%m%d-%H%M)
+  stem="sofia-varna-${stamp}"
+  base="${stem}.tar.zst"
+  stage_tar="$LOCAL_DIR/.incoming/payload.tar"
+  stage_zst="$LOCAL_DIR/.incoming/${base}"
+  listfile="$LOCAL_DIR/.incoming/payload.list"
+
+  # Freeze covers only this read. Compression happens after save-on.
+  pct exec "$CTID" -- tar -C "$MINECRAFT_ROOT" -cf - --one-file-system --exclude=session.lock "${INCLUDES[@]}" >"$stage_tar"
+
+  release_saves
+
+  if ! tar -tf "$stage_tar" >"$listfile"; then
+    fail "tar listing failed"
+  fi
+  entries=$(wc -l <"$listfile" | awk '{print $1}')
+  if ((entries < 50)); then
+    fail "tar has only ${entries} entries"
+  fi
+  require_phrase_in_tar "$listfile" "world/level.dat"
+  require_phrase_in_tar "$listfile" "world/dimensions/minecraft/overworld"
+  require_phrase_in_tar "$listfile" "world/dimensions/minecraft/the_nether"
+  require_phrase_in_tar "$listfile" "world/dimensions/minecraft/the_end"
+  require_phrase_in_tar "$listfile" "world/players/data"
+  require_phrase_in_tar "$listfile" "server.jar"
+  require_phrase_in_tar "$listfile" "plugins"
+  if grep -q 'session.lock' "$listfile"; then
+    fail "archive contains session.lock"
+  fi
+  if grep -qx '\.minecraft' "$listfile" || grep -q '^\.minecraft/' "$listfile"; then
+    fail "archive contains .minecraft"
+  fi
+
+  nice -n 19 zstd -3 -T2 -q -f "$stage_tar" -o "$stage_zst"
+  zstd -t "$stage_zst"
+  rm -f "$stage_tar"
+  stage_tar=""
+
+  hash=$(sha256sum "$stage_zst" | awk '{print $1}')
+  arch_bytes=$(stat -c %s "$stage_zst")
+  sha_tmp="$LOCAL_DIR/.incoming/${base}.sha256"
+  manifest_tmp="$LOCAL_DIR/.incoming/${stem}.manifest.txt"
+  printf '%s  %s\n' "$hash" "$base" >"$sha_tmp"
+  write_manifest "$manifest_tmp" "$mode" "$hash" "$world_bytes" "$java_ver" "$plugins" "$paper_ver" "$entries" "$stem"
+
+  mv "$stage_zst" "$LOCAL_DIR/$base"
+  stage_zst=""
+  mv "$sha_tmp" "$LOCAL_DIR/${base}.sha256"
+  mv "$manifest_tmp" "$LOCAL_DIR/${stem}.manifest.txt"
+  (
+    cd "$LOCAL_DIR"
+    sha256sum -c "${base}.sha256"
+  )
+  rm -rf "$LOCAL_DIR/.incoming"
+  prune_dir "$LOCAL_DIR" "$LOCAL_KEEP"
+  log "created $LOCAL_DIR/$base mode=$mode bytes=$arch_bytes entries=$entries sha256=$hash"
+}
+
+do_replicate_raid() {
+  local newest base stem src age_h mtime now avail
+  ensure_dirs
+  sweep_incomplete "$LOCAL_DIR"
+  sweep_incomplete "$RAID_DIR"
+
+  newest=$(newest_basename "$LOCAL_DIR")
+  [[ -n "$newest" ]] || fail "no local archive to copy"
+  stem=${newest%.tar.zst}
+  for src in "$LOCAL_DIR/$newest" "$LOCAL_DIR/$newest.sha256" "$LOCAL_DIR/${stem}.manifest.txt"; do
+    [[ -f "$src" ]] || fail "missing sidecar $src"
+  done
+
+  if [[ -n "$(newest_basename "$RAID_DIR")" ]]; then
+    mtime=$(stat -c %Y "$RAID_DIR/$(newest_basename "$RAID_DIR")")
+    now=$(date +%s)
+    age_h=$(((now - mtime) / 3600))
+    if ((age_h < RAID_MIN_AGE_HOURS)); then
+      log "raid newest is ${age_h}h old (< ${RAID_MIN_AGE_HOURS}), skip"
+      exit 0
+    fi
+  fi
+
+  if [[ -f "$RAID_DIR/$newest" ]]; then
+    log "newest local archive already on raid ($newest)"
+    exit 0
+  fi
+
+  avail=$(free_kib "$RAID_DIR")
+  if ((avail < RAID_MIN_FREE_KIB)); then
+    fail "hdd-raid0 free ${avail} KiB is below ${RAID_MIN_FREE_KIB}"
+  fi
+
+  rm -rf "$RAID_DIR/.incoming"
+  mkdir -p "$RAID_DIR/.incoming"
+  chmod 700 "$RAID_DIR/.incoming"
+  cp -a "$LOCAL_DIR/$newest" "$LOCAL_DIR/$newest.sha256" "$LOCAL_DIR/${stem}.manifest.txt" "$RAID_DIR/.incoming/"
+  if [[ -f "$LOCAL_DIR/RESTORE.md" ]]; then
+    cp -a "$LOCAL_DIR/RESTORE.md" "$RAID_DIR/RESTORE.md"
+  fi
+  (
+    cd "$RAID_DIR/.incoming"
+    sha256sum -c "$newest.sha256"
+    zstd -t "$newest"
+  )
+  mv "$RAID_DIR/.incoming/$newest" "$RAID_DIR/$newest"
+  mv "$RAID_DIR/.incoming/$newest.sha256" "$RAID_DIR/$newest.sha256"
+  mv "$RAID_DIR/.incoming/${stem}.manifest.txt" "$RAID_DIR/${stem}.manifest.txt"
+  rm -rf "$RAID_DIR/.incoming"
+  (
+    cd "$RAID_DIR"
+    sha256sum -c "$newest.sha256"
+  )
+  prune_dir "$RAID_DIR" "$RAID_KEEP"
+  log "raid copy $RAID_DIR/$newest"
+}
+
+write_remote_rows() {
+  # Writes "epoch stem" lines for remote archives. rclone must succeed.
+  local out=$1
+  local list line ts path stem epoch
+  list=$(mktemp)
+  rclone lsf "${GDRIVE_REMOTE}" --files-only --format "tp" --separator ';' >"$list"
+  : >"$out"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    ts=${line%%;*}
+    path=${line#*;}
+    [[ "$path" == sofia-varna-*.tar.zst ]] || continue
+    stem=${path%.tar.zst}
+    epoch=$(date -d "$ts" +%s)
+    printf '%s %s\n' "$epoch" "$stem" >>"$out"
+  done <"$list"
+  rm -f "$list"
+}
+
+load_remote_rows() {
+  local -n _dest=$1
+  local file row
+  file=$(mktemp)
+  write_remote_rows "$file"
+  _dest=()
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    _dest+=("$row")
+  done < <(sort -n "$file")
+  rm -f "$file"
+}
+
+delete_remote_stem() {
+  local stem=$1
+  rclone deletefile "${GDRIVE_REMOTE}${stem}.tar.zst"
+  rclone deletefile "${GDRIVE_REMOTE}${stem}.tar.zst.sha256" || true
+  rclone deletefile "${GDRIVE_REMOTE}${stem}.manifest.txt" || true
+  log "deleted remote $stem"
+}
+
+gdrive_free_bytes() {
+  local json
+  if ! json=$(rclone about "${GDRIVE_QUOTA_REMOTE}" --json 2>/dev/null); then
+    log "gdrive about failed, skipping free-space check"
+    echo -1
+    return 0
+  fi
+  printf '%s\n' "$json" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print(-1)
+    raise SystemExit(0)
+v=d.get("free")
+print(-1 if v is None else int(v))'
+}
+
+summarize_remote_rows() {
+  local -n _rows=$1
+  local -n _newest_epoch=$2
+  local -n _newest_stem=$3
+  local -n _oldest_epoch=$4
+  local -n _oldest_stem=$5
+  local -n _count=$6
+  local row epoch stem_name
+  _newest_epoch=0
+  _newest_stem=""
+  _oldest_epoch=0
+  _oldest_stem=""
+  _count=0
+  for row in "${_rows[@]+"${_rows[@]}"}"; do
+    [[ -n "$row" ]] || continue
+    epoch=${row%% *}
+    stem_name=${row#* }
+    _count=$((_count + 1))
+    if ((_newest_epoch == 0 || epoch > _newest_epoch)); then
+      _newest_epoch=$epoch
+      _newest_stem=$stem_name
+    fi
+    if ((_oldest_epoch == 0 || epoch < _oldest_epoch)); then
+      _oldest_epoch=$epoch
+      _oldest_stem=$stem_name
+    fi
+  done
+}
+
+prune_remote() {
+  local -a rows=()
+  local count row stem_name guard _pe _ps _oe _os
+  guard=0
+  while true; do
+    load_remote_rows rows
+    summarize_remote_rows rows _pe _ps _oe _os count
+    if ((count <= GDRIVE_KEEP || count <= 1)); then
+      break
+    fi
+    row=${rows[0]}
+    stem_name=${row#* }
+    delete_remote_stem "$stem_name"
+    guard=$((guard + 1))
+    if ((guard > 20)); then
+      fail "gdrive prune did not shrink the remote"
+    fi
+  done
+}
+
+do_replicate_gdrive() {
+  local newest stem raid_zst now newest_epoch newest_stem oldest_epoch oldest_stem
+  local age min count free size local_md5 remote_md5
+  local -a rows=()
+
+  if [[ "${GDRIVE_ENABLED}" != "1" ]]; then
+    log "gdrive disabled (GDRIVE_ENABLED=${GDRIVE_ENABLED})"
+    exit 0
+  fi
+  command -v rclone >/dev/null || fail "rclone is not installed"
+  rclone listremotes | grep -Fxq "${GDRIVE_REMOTE}" || fail "rclone remote ${GDRIVE_REMOTE} is missing"
+  rclone listremotes | grep -Fxq "${GDRIVE_QUOTA_REMOTE}" || fail "rclone remote ${GDRIVE_QUOTA_REMOTE} is missing"
+
+  ensure_dirs
+  newest=$(newest_basename "$RAID_DIR")
+  [[ -n "$newest" ]] || fail "no raid archive to upload"
+  stem=${newest%.tar.zst}
+  raid_zst="$RAID_DIR/$newest"
+  [[ -f "$raid_zst" && -f "$RAID_DIR/$newest.sha256" && -f "$RAID_DIR/${stem}.manifest.txt" ]] || fail "raid archive set is incomplete"
+
+  load_remote_rows rows
+  summarize_remote_rows rows newest_epoch newest_stem oldest_epoch oldest_stem count
+  now=$(date +%s)
+
+  if [[ -n "$newest_stem" && "$newest_stem" == "$stem" ]]; then
+    log "remote already has $stem"
+    prune_remote
+    exit 0
+  fi
+  if [[ -n "$newest_stem" ]]; then
+    age=$((now - newest_epoch))
+    min=$((GDRIVE_MIN_AGE_DAYS * 86400))
+    if ((age < min)); then
+      log "remote newest ${newest_stem} is $((age / 3600))h old (< ${GDRIVE_MIN_AGE_DAYS}d), skip"
+      prune_remote
+      exit 0
+    fi
+  fi
+
+  size=$(stat -c %s "$raid_zst")
+  free=$(gdrive_free_bytes)
+  if ((free >= 0 && free < size + 2 * 1024 * 1024 * 1024)); then
+    if [[ -n "$oldest_stem" && "$oldest_stem" != "$newest_stem" ]]; then
+      delete_remote_stem "$oldest_stem"
+      free=$(gdrive_free_bytes)
+    fi
+    if ((free >= 0 && free < size + 1024 * 1024 * 1024)); then
+      fail "google drive free ${free} bytes cannot fit $(basename "$raid_zst")"
+    fi
+  fi
+
+  rclone copyto "$raid_zst" "${GDRIVE_REMOTE}${newest}"
+  rclone copyto "$RAID_DIR/$newest.sha256" "${GDRIVE_REMOTE}${newest}.sha256"
+  rclone copyto "$RAID_DIR/${stem}.manifest.txt" "${GDRIVE_REMOTE}${stem}.manifest.txt"
+  if [[ -f "$LOCAL_DIR/RESTORE.md" ]]; then
+    rclone copyto "$LOCAL_DIR/RESTORE.md" "${GDRIVE_REMOTE}RESTORE.md"
+  fi
+
+  local check_dir
+  check_dir=$(mktemp -d -p "$RAID_DIR" .cryptcheck.XXXXXX)
+  chmod 700 "$check_dir"
+  ln "$raid_zst" "$check_dir/$newest"
+  ln "$RAID_DIR/$newest.sha256" "$check_dir/$newest.sha256"
+  ln "$RAID_DIR/${stem}.manifest.txt" "$check_dir/${stem}.manifest.txt"
+  if [[ -f "$RAID_DIR/RESTORE.md" ]]; then
+    ln "$RAID_DIR/RESTORE.md" "$check_dir/RESTORE.md"
+  fi
+  if ! rclone cryptcheck "$check_dir" "${GDRIVE_REMOTE}"; then
+    rm -rf "$check_dir"
+    fail "gdrive cryptcheck failed for $stem"
+  fi
+  rm -rf "$check_dir"
+  log "gdrive upload $stem cryptcheck=ok"
+  prune_remote
+}
+
+do_restore_test() {
+  local archive=$1
+  local dir base stem tmp listfile
+  ensure_dirs
+  [[ -n "$archive" && -f "$archive" ]] || fail "usage: minecraft-backup restore-test ARCHIVE"
+  dir=$(dirname "$archive")
+  base=$(basename "$archive")
+  stem=${base%.tar.zst}
+  [[ -f "$dir/$base.sha256" ]] || fail "missing $dir/$base.sha256"
+  (
+    cd "$dir"
+    sha256sum -c "$base.sha256"
+  )
+  zstd -t "$archive"
+
+  tmp=$(mktemp -d "$LOCAL_DIR/.restore-test.XXXXXX")
+  tmp_cleanup=$tmp
+  zstd -dc "$archive" | tar -C "$tmp" --no-same-owner -xf -
+  [[ -f "$tmp/world/level.dat" ]] || fail "restore-test missing world/level.dat"
+  [[ -d "$tmp/world/dimensions/minecraft/overworld" ]] || fail "restore-test missing overworld"
+  [[ -d "$tmp/world/dimensions/minecraft/the_nether" ]] || fail "restore-test missing nether"
+  [[ -d "$tmp/world/dimensions/minecraft/the_end" ]] || fail "restore-test missing end"
+  [[ -d "$tmp/world/players/data" ]] || fail "restore-test missing players/data"
+  [[ -f "$tmp/server.jar" ]] || fail "restore-test missing server.jar"
+  [[ -f "$tmp/server-vanilla-26.3.jar" ]] || fail "restore-test missing vanilla jar"
+  [[ -n "$(find "$tmp/plugins" -maxdepth 1 -name '*.jar' -print -quit)" ]] || fail "restore-test missing plugin jars"
+  if find "$tmp" -name session.lock | grep -q .; then
+    fail "restore-test found session.lock"
+  fi
+  if [[ -e "$tmp/.minecraft" ]]; then
+    fail "restore-test found .minecraft"
+  fi
+  listfile=$(find "$tmp/world/players/data" -type f | wc -l | awk '{print $1}')
+  log "restore-test ok $archive player_data_files=$listfile"
+  rm -rf "$tmp"
+  tmp_cleanup=""
+}
+
+do_restore_world() {
+  local archive=$1
+  local apply=${2:-}
+  local dir base stamp dest tmp response
+  [[ -n "$archive" && -f "$archive" ]] || fail "usage: minecraft-backup restore-world ARCHIVE [--apply]"
+  dir=$(dirname "$archive")
+  base=$(basename "$archive")
+  (
+    cd "$dir"
+    sha256sum -c "$base.sha256"
+  )
+  zstd -t "$archive"
+  if ! zstd -dc "$archive" | tar -tf - | grep -qx 'world/level.dat'; then
+    fail "archive has no world/level.dat"
+  fi
+  if [[ "$apply" != "--apply" ]]; then
+    cat <<EOF
+Refusing to change the live world.
+Re-run with --apply to do all of the following:
+  1. Stop minecraft.service on CT ${CTID} and wait for it.
+  2. Rename /opt/minecraft/world to /opt/minecraft/world.pre-restore-<timestamp>.
+  3. Extract world/ from ${archive}, drop session.lock, chown minecraft.
+  4. Start minecraft.service.
+The renamed world is left in place until you delete it.
+EOF
+    exit 2
+  fi
+
+  ct_running || fail "CT ${CTID} is not running"
+  log "restore-world applying $archive"
+  pct exec "$CTID" -- systemctl stop minecraft.service
+
+  stamp=$(date +%Y%m%d-%H%M%S)
+  dest=$(pct exec "$CTID" -- bash -c '
+    set -eu
+    dest="/opt/minecraft/world.pre-restore-$1"
+    if [[ -e "$dest" ]]; then
+      echo "destination exists" >&2
+      exit 1
+    fi
+    if [[ -d /opt/minecraft/world ]]; then
+      mv /opt/minecraft/world "$dest"
+    fi
+    printf "%s\n" "$dest"
+  ' _ "$stamp") || {
+    pct exec "$CTID" -- systemctl start minecraft.service || true
+    fail "could not rename the live world"
+  }
+  log "renamed live world to $dest"
+
+  tmp=$(mktemp -d "$LOCAL_DIR/.restore-world.XXXXXX")
+  tmp_cleanup=$tmp
+  if ! zstd -dc "$archive" | tar -C "$tmp" --no-same-owner -xf - world; then
+    pct exec "$CTID" -- bash -c 'if [[ ! -d /opt/minecraft/world && -d "$1" ]]; then mv "$1" /opt/minecraft/world; fi' _ "$dest" || true
+    pct exec "$CTID" -- systemctl start minecraft.service || true
+    fail "extract failed; attempted to put the previous world back"
+  fi
+  find "$tmp/world" -name session.lock -delete
+  if ! tar -C "$tmp" -cf - world | pct exec "$CTID" -- tar -C /opt/minecraft -xf -; then
+    pct exec "$CTID" -- bash -c 'rm -rf /opt/minecraft/world; if [[ -d "$1" ]]; then mv "$1" /opt/minecraft/world; fi' _ "$dest" || true
+    pct exec "$CTID" -- systemctl start minecraft.service || true
+    fail "copy into the container failed; attempted to put the previous world back"
+  fi
+  pct exec "$CTID" -- chown -R minecraft:minecraft /opt/minecraft/world
+  pct exec "$CTID" -- find /opt/minecraft/world -name session.lock -delete
+  pct exec "$CTID" -- systemctl start minecraft.service
+  rm -rf "$tmp"
+  tmp_cleanup=""
+  log "restore-world started CT ${CTID}; previous world remains at $dest"
+}
+
+do_status() {
+  local tier dir base mtime now age
+  ensure_dirs
+  for tier in local raid; do
+    if [[ "$tier" == local ]]; then
+      dir=$LOCAL_DIR
+    else
+      dir=$RAID_DIR
+    fi
+    base=$(newest_basename "$dir" || true)
+    if [[ -z "$base" ]]; then
+      printf '%s: none\n' "$tier"
+      continue
+    fi
+    mtime=$(stat -c %Y "$dir/$base")
+    now=$(date +%s)
+    age=$(((now - mtime) / 3600))
+    printf '%s: %s age_hours=%s count=%s\n' "$tier" "$base" "$age" "$(archive_basenames "$dir" | wc -l | awk '{print $1}')"
+  done
+  if [[ "${GDRIVE_ENABLED}" != "1" ]]; then
+    printf 'gdrive: disabled\n'
+  else
+    printf 'gdrive: enabled remote=%s keep=%s\n' "$GDRIVE_REMOTE" "$GDRIVE_KEEP"
+  fi
+}
+
+do_ping_rcon() {
+  ct_running || fail "CT ${CTID} is not running"
+  rcon_ok "save-on" 'enabled|turned on'
+}
+
+usage() {
+  cat <<EOF
+usage: minecraft-backup create
+       minecraft-backup replicate-raid
+       minecraft-backup replicate-gdrive
+       minecraft-backup restore-test ARCHIVE
+       minecraft-backup restore-world ARCHIVE [--apply]
+       minecraft-backup status
+       minecraft-backup ping-rcon
+EOF
+}
+
+main() {
+  local cmd=${1:-}
+  exec 9>"$LOCK_FILE"
+  if ! flock -w 1800 9; then
+    fail "timed out waiting for $LOCK_FILE"
+  fi
+  case "$cmd" in
+    create) do_create ;;
+    replicate-raid) do_replicate_raid ;;
+    replicate-gdrive) do_replicate_gdrive ;;
+    restore-test) do_restore_test "${2:-}" ;;
+    restore-world) do_restore_world "${2:-}" "${3:-}" ;;
+    status) do_status ;;
+    ping-rcon) do_ping_rcon ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

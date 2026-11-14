@@ -1,0 +1,12 @@
+[Unit]
+Description=SofiaVarna local backup every 12 hours
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+OnCalendar=*-*-* 17:00:00
+Timezone=Europe/Sofia
+Persistent=true
+Unit=minecraft-backup.service
+
+[Install]
+WantedBy=timers.target
