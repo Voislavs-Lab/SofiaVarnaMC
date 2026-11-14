@@ -11,3 +11,5 @@ infra/     Host, container, and server configuration
 Secrets stay off this repo. That includes `server.properties`, RCON and management credentials, backup tokens, and SSH private keys.
 
 The live server is Paper 26.3. The default branch is `master`.
+
+Agents working on this server should read [AGENTS.md](AGENTS.md) first.
