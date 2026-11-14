@@ -105,7 +105,17 @@ The live copy of the script is `/usr/local/sbin/minecraft-backup` on the Proxmox
 
 Archives are named `sofia-varna-YYYYmmdd-HHMM.tar.zst` and include `server.properties`. `restore-test` does not stop the game. `restore-world` only prints a plan unless `--apply` is passed. `--apply` stops the server and renames the live world. Do not pass `--apply` unless the owner asked for a restore.
 
-Leave Proxmox snapshots `pre-paper` and `wither-skeleton-farm` in place. `pre-paper` is the Paper cutover rollback point. The matching vzdump is named in `scripts/RESTORE.md`. Those are outside this rotation.
+The world is frozen only on the local job: `save-on`, then `save-off`, `save-all flush`, tar, then `save-on`. If the service is up and RCON fails, the job aborts and does not archive. RAID and Drive copy a finished archive and do not read the live world. One lock covers all three jobs. Prune only after `zstd -t` and SHA-256, and never delete the newest archive. Skip the local job when the Proxmox root filesystem has under 15 GiB free, and the RAID copy when the array has under 50 GiB free.
+
+RCON is reached with `/usr/local/bin/mcrcon` and `MCRCON_PASS` through `pct exec` on the Proxmox host. Do not SSH to the container for that, and do not publish RCON.
+
+Drive details are in `scripts/RESTORE.md`. The scope stays `drive.file`. The crypt remote stays `sofiavarna:` over `gdrive:SofiaVarna` inside that Drive folder. Do not switch the scope back to full Drive, and do not generate a new crypt password. The password file is `/root/minecraft-gdrive-crypt-pass`. It is a 44-character base64 string. If rclone treats it as already obscured, pass the obscured form with `--no-obscure`. Verify an upload with `rclone cryptcheck` of the files just uploaded, using hardlinks on the RAID filesystem. `rclone md5sum` does not work on a crypt remote. If `rclone about` fails, the script logs a warning and continues. Do not print `rclone.conf`, the crypt password, or an OAuth token.
+
+`md0` is RAID0. A copy on it dies with either WD disk, and so does the Plex library. Do not store archives under `media` or in the vzdump `dump/` directory.
+
+rclone on the host is 1.75.2 at `/usr/local/bin/rclone` and still uses rclone's shared Google client id. That client is due to stop working during 2026. Do not create a replacement client id unless the owner asks.
+
+Leave Proxmox snapshots `pre-paper` and `wither-skeleton-farm` in place. `pre-paper` is the Paper cutover rollback point. The matching vzdump is named in `scripts/RESTORE.md`. Those are outside this rotation. No recurring vzdump job.
 
 ## Before you change the live server
 
