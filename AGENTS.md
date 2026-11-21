@@ -123,7 +123,7 @@ The default branch is `master`.
 
 `scripts/minecraft-backup` is the host backup script. `infra/minecraft-backup.conf` and `infra/systemd/` are its settings and timers. `scripts/RESTORE.md` is the restore note. The script reads secrets from the host. Do not commit `server.properties`, the RCON password, or the Drive crypt password, and do not copy a password into a script.
 
-Commits on this repo use author and committer `NikolaVoislav <nikolavoislav.sekulov@gmail.com>`. Do not add a co-author or a second committer unless the owner gives an email that is theirs. Do not change the machine's global git config.
+Commits on this repo use author and committer `NikolaVoislav <nikolavoislav.sekulov@gmail.com>`. Do not change the machine's global git config.
 
 ## Backups
 
