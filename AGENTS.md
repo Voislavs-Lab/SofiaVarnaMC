@@ -57,7 +57,16 @@ Leave these uninstalled unless the owner asks: VeryMcProto, WorldEdit, Essential
 
 ## Permissions
 
-The owner's account is the only op (level 4). The other players were de-opped on 2026-11-21. The old file is `/opt/minecraft/ops.json.pre-luckperms`. Player names stay out of this repo, the same as the whitelist.
+Nobody is op by default, and `ops.json` is empty. All players were de-opped on 2026-11-21. The old files are `/opt/minecraft/ops.json.pre-luckperms` and `ops.json.pre-admin-group`. Player names stay out of this repo, the same as the whitelist.
+
+The owner's account is in the LuckPerms group `admin`, which inherits `default` and adds:
+
+| Node | Gives |
+| --- | --- |
+| `minecraft.command.op`, `minecraft.command.deop` | `/op` and `/deop`, so the owner can op themselves for debugging and deop again afterwards |
+| `beaconrange.admin`, `sharedenderchest.admin`, `coppergolemclerk.admin` | Our plugins' admin commands, without op |
+
+Do not op the owner permanently or add other players to `admin` unless the owner asks. Anyone in `admin` can op anyone.
 
 Everyone is in the LuckPerms group `default`. That group has:
 
@@ -69,7 +78,7 @@ Everyone is in the LuckPerms group `default`. That group has:
 
 Do not grant `minecraft.command.gamemode` to `default`. It is one node for every mode and every target, so it would allow creative. Non-ops cannot use F3+F4 or F3+N.
 
-Storage is YAML in `plugins/LuckPerms/yaml-storage`, which the backup tar includes. `infra/luckperms/default-group.yml` mirrors the group. To add a node, run `lp group default permission set <node> true` over RCON. LuckPerms prints its replies to the console log, not to the RCON response, so read the result from the group file. Then copy the file back to `infra/`.
+Storage is YAML in `plugins/LuckPerms/yaml-storage`, which the backup tar includes. `infra/luckperms/default-group.yml` and `admin-group.yml` mirror the groups. To add a node, run `lp group default permission set <node> true` over RCON. LuckPerms prints its replies to the console log, not to the RCON response, so read the result from the group file. Then copy the file back to `infra/`.
 
 Installed jars: `LuckPerms-Bukkit-5.5.91.jar` SHA-256 `2a6834c51830b133ec8763703391b20240f7a3b4748746503251a45d70cf1b39`. `gamemode-switch-1.0.0.jar` SHA-256 `8c28cebb4440cd37675415081c18f1894c124030d9abfab01f057e2c94a40486`. `CopperGolemClerk-3.2.0.jar` SHA-256 `cd51869f7eece3d517d425e5acf5e5733c4c4dd6452f9d9cffa24591eca22fe2`.
 
