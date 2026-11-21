@@ -126,4 +126,6 @@ Tell the owner and wait for an explicit yes before an install, a plugin or Minec
 
 Do not change the CPU or RAM. Do not expose RCON any further.
 
+SSH: since 2026-11-21 CT 111 accepts keys only (no password login). Root takes the owner's two 1Password keys and the CT117 Ansible key. It is managed by the `ssh_hardening` Ansible role in Voislavs-Lab/infra; change keys there, not by hand.
+
 Firewall: since 2026-11-21 CT 111 is in the Proxmox firewall security group `dmz-games` (owner-approved). Inbound is unchanged (policy ACCEPT), so players connect as before. Outbound from the container may reach the internet and the gateway's DHCP, but not other LAN hosts. RCON and backups still work because they go through `pct exec` on the host, not the network. Do not change those rules without the owner. If a plugin needs to reach a LAN service, ask first.
