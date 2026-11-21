@@ -19,6 +19,7 @@ bucket=${2:?usage: minecraft-backup-setup-r2 ACCOUNT_ID BUCKET}
 
 IFS= read -r ak
 IFS= read -r sk
+ak=${ak#$'\xef\xbb\xbf'}
 ak=${ak%$'\r'}
 sk=${sk%$'\r'}
 [[ ${#ak} -eq 32 && ${#sk} -eq 64 ]] || { echo "unexpected key lengths (${#ak}, ${#sk})" >&2; exit 1; }
