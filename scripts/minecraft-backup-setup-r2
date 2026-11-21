@@ -1,0 +1,70 @@
+#!/bin/bash
+# One-time: add the rclone remotes for the R2 copy on the Proxmox host.
+#
+#   minecraft-backup-setup-r2 <cloudflare-account-id> <bucket>
+#
+# Reads two lines on stdin: the R2 access key id, then the secret access key
+# (a bucket-scoped "Object Read & Write" token). Nothing is printed or passed on argv.
+#
+# Adds:
+#   r2-minecraft:   S3 remote, provider Cloudflare, EU jurisdiction endpoint
+#   sofiavarna-r2:  crypt over r2-minecraft:<bucket>/sofiavarna, with the same
+#                   password, salt and name encryption as the existing sofiavarna: remote
+set -euo pipefail
+umask 077
+
+account=${1:?usage: minecraft-backup-setup-r2 ACCOUNT_ID BUCKET}
+bucket=${2:?usage: minecraft-backup-setup-r2 ACCOUNT_ID BUCKET}
+[[ "$account" =~ ^[0-9a-f]{32}$ ]] || { echo "account id should be 32 hex characters" >&2; exit 1; }
+
+IFS= read -r ak
+IFS= read -r sk
+ak=${ak#$'\xef\xbb\xbf'}
+ak=${ak%$'\r'}
+sk=${sk%$'\r'}
+[[ ${#ak} -eq 32 && ${#sk} -eq 64 ]] || { echo "unexpected key lengths (${#ak}, ${#sk})" >&2; exit 1; }
+
+conf=$(rclone config file | tail -n 1)
+rclone listremotes | grep -Fxq 'sofiavarna:' || { echo "existing crypt remote sofiavarna: not found" >&2; exit 1; }
+if rclone listremotes | grep -Eq '^(r2-minecraft|sofiavarna-r2):$'; then
+  echo "r2-minecraft: or sofiavarna-r2: already exists; remove it with 'rclone config delete' first" >&2
+  exit 1
+fi
+
+cp -a "$conf" "$conf.bak-$(date +%Y%m%d-%H%M%S)"
+AK=$ak SK=$sk ACCOUNT=$account BUCKET=$bucket CONF=$conf python3 - <<'PY'
+import json, os, subprocess
+dump = json.loads(subprocess.run(["rclone", "config", "dump"], check=True, capture_output=True, text=True).stdout)
+src = dump["sofiavarna"]
+assert src.get("type") == "crypt", "sofiavarna is not a crypt remote"
+crypt = {"type": "crypt", "remote": "r2-minecraft:%s/sofiavarna" % os.environ["BUCKET"]}
+for key in ("password", "password2", "filename_encryption", "directory_name_encryption", "filename_encoding"):
+    if key in src:
+        crypt[key] = src[key]
+s3 = {
+    "type": "s3",
+    "provider": "Cloudflare",
+    "access_key_id": os.environ["AK"],
+    "secret_access_key": os.environ["SK"],
+    "endpoint": "https://%s.eu.r2.cloudflarestorage.com" % os.environ["ACCOUNT"],
+    "region": "auto",
+    "acl": "private",
+    "no_check_bucket": "true",
+}
+with open(os.environ["CONF"], "a") as f:
+    for name, sect in (("r2-minecraft", s3), ("sofiavarna-r2", crypt)):
+        f.write("\n[%s]\n" % name)
+        for k, v in sect.items():
+            f.write("%s = %s\n" % (k, v))
+PY
+unset ak sk
+
+echo "remotes added; checking access"
+rclone lsf "r2-minecraft:$bucket" --max-depth 1 >/dev/null
+probe=$(mktemp -d)
+echo "setup probe $(date -u +%FT%TZ)" >"$probe/.setup-probe"
+rclone copyto "$probe/.setup-probe" "sofiavarna-r2:.setup-probe"
+rclone cryptcheck --one-way --include .setup-probe "$probe" sofiavarna-r2:
+rclone deletefile "sofiavarna-r2:.setup-probe"
+rm -rf "$probe"
+echo "ok: sofiavarna-r2: can write, verify and delete"

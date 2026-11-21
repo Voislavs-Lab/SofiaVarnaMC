@@ -1,10 +1,11 @@
 [Unit]
-Description=SofiaVarna weekly Google Drive replicate
+Description=SofiaVarna daily R2 replicate
 After=network-online.target
+Wants=network-online.target
 ConditionPathExists=/usr/local/sbin/minecraft-backup
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/minecraft-backup replicate-gdrive
+ExecStart=/usr/local/sbin/minecraft-backup replicate-r2
 Nice=10
 TimeoutStartSec=30min
