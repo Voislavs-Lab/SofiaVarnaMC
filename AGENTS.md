@@ -102,7 +102,7 @@ The live copy of the script is `/usr/local/sbin/minecraft-backup` on the Proxmox
 | Local, `/var/backups/minecraft` | 05:00 and 17:00 | 4 |
 | Cloudflare R2, crypt remote `sofiavarna-r2:` | Daily 05:25, newest local archive (skipped if R2's newest is under 20 hours old) | 7 |
 
-The owner decided on 2026-11-21: no backups on the RAID0 array, and R2 replaces Google Drive (Drive was out of space). Old copies on `/mnt/hdd-raid0/minecraft-backups` and Drive are no longer updated; delete them only when the owner asks.
+The owner decided on 2026-11-21: no backups on the RAID0 array, and R2 replaces Google Drive (Drive was out of space). The old copies on `/mnt/hdd-raid0/minecraft-backups` and Drive were deleted on 2026-11-21, after the Nov 10 to Nov 20 archives were copied to R2 and checked.
 
 Archives are named `sofia-varna-YYYYmmdd-HHMM.tar.zst` and include `server.properties`. `restore-test` does not stop the game. `restore-world` only prints a plan unless `--apply` is passed. `--apply` stops the server and renames the live world. Do not pass `--apply` unless the owner asked for a restore.
 
@@ -110,13 +110,13 @@ The world is frozen only on the local job: `save-on`, then `save-off`, `save-all
 
 RCON is reached with `/usr/local/bin/mcrcon` and `MCRCON_PASS` through `pct exec` on the Proxmox host. Do not SSH to the container for that, and do not publish RCON.
 
-R2 details are in `scripts/RESTORE.md`. `r2-minecraft:` is an S3 remote (provider Cloudflare, EU jurisdiction endpoint, `no_check_bucket`) with a key scoped to the one bucket. `sofiavarna-r2:` is a crypt remote over `r2-minecraft:<bucket>/sofiavarna` with the same password and salt as the old `sofiavarna:` Drive remote; `scripts/minecraft-backup-setup-r2` creates both. Do not generate a new crypt password. The password file is `/root/minecraft-gdrive-crypt-pass` (a 44-character base64 string; if rclone treats it as already obscured, pass the obscured form with `--no-obscure`). Verify an upload with `rclone cryptcheck --one-way` of the files just uploaded, using hardlinks inside `/var/backups/minecraft`. `rclone md5sum` does not work on a crypt remote. Do not print `rclone.conf`, the crypt password, the R2 key, or an OAuth token. Keep the account id and bucket endpoint out of this repo.
+R2 details are in `scripts/RESTORE.md`. `r2-minecraft:` is an S3 remote (provider Cloudflare, EU jurisdiction endpoint, `no_check_bucket`) with a key scoped to the one bucket. `sofiavarna-r2:` is a crypt remote over `r2-minecraft:<bucket>/sofiavarna` with the same password as the old Drive copies (no salt). `scripts/minecraft-backup-setup-r2` creates both from a `sofiavarna:` crypt remote, which you create first (see `scripts/RESTORE.md`). Do not generate a new crypt password. The password file is `/root/minecraft-gdrive-crypt-pass` (a 44-character base64 string; if rclone treats it as already obscured, pass the obscured form with `--no-obscure`). Verify an upload with `rclone cryptcheck --one-way` of the files just uploaded, using hardlinks inside `/var/backups/minecraft`. `rclone md5sum` does not work on a crypt remote. Do not print `rclone.conf`, the crypt password, the R2 key, or an OAuth token. Keep the account id and bucket endpoint out of this repo.
 
 R2 has no hard spending cap. The owner has a Cloudflare budget alert. Keep retention short and do not upload more than one archive a day without asking.
 
 `md0` is RAID0. A copy on it dies with either WD disk, and so does the Plex library. Do not store archives on it, under `media`, or in the vzdump `dump/` directory.
 
-rclone on the host is 1.75.2 at `/usr/local/bin/rclone`. The old `gdrive:` remote still uses rclone's shared Google client id, which is due to stop working during 2026. Do not create a replacement client id unless the owner asks.
+rclone on the host is 1.75.2 at `/usr/local/bin/rclone`. The Google Drive remotes (`gdrive:`, `sofiavarna:`) and their OAuth token were removed on 2026-11-21. Do not set Drive up again unless the owner asks. The crypt password is in the owner's 1Password as "rclone crypt password · Minecraft backups (R2) — REQUIRED to restore".
 
 Leave Proxmox snapshots `pre-paper` and `wither-skeleton-farm` in place. `pre-paper` is the Paper cutover rollback point. The matching vzdump is named in `scripts/RESTORE.md`. Those are outside this rotation. No recurring vzdump job.
 
