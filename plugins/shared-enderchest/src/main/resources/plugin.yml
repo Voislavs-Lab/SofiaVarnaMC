@@ -1,0 +1,19 @@
+name: SharedEnderChest
+version: 1.0.0
+main: com.sofiavarna.sharedenderchest.SharedEnderChestPlugin
+api-version: '26.3'
+description: Per-player toggle between the private ender chest and one shared server chest
+author: SofiaVarna
+commands:
+  echest:
+    description: Show or switch which ender chest an ender chest block opens for you
+    usage: /ec [shared|private]
+    aliases: [ec]
+    permission: sharedenderchest.use
+permissions:
+  sharedenderchest.use:
+    description: Switch to and open the shared ender chest
+    default: true
+  sharedenderchest.admin:
+    description: Save the shared ender chest on demand
+    default: op
