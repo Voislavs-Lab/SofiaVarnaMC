@@ -2,4 +2,5 @@ name: default
 permissions:
 - coppergolemclerk.alerts
 - gamemodeswitch.use
+- minecraft.command.gamemode
 - minecraft.command.teleport
