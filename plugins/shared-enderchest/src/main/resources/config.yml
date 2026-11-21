@@ -1,0 +1,6 @@
+# Rows in the shared chest, 1 to 6. Read at startup.
+# Lowering it never drops items: the chest stays big enough for what it holds.
+rows: 3
+
+# Title of the shared chest window.
+title: "Shared Ender Chest"

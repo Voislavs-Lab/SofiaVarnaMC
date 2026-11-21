@@ -41,6 +41,7 @@ Jars live in `/opt/minecraft/plugins`. A newly copied jar is not hot-loaded. Ins
 | Plugin | Version | Notes |
 | --- | --- | --- |
 | BeaconRange | 1.0.0 | Ours. Source is `plugins/beacon-range`. |
+| SharedEnderChest | 1.0.0 | Ours. Source is `plugins/shared-enderchest`. Built, not installed yet (needs the owner's yes and a restart). |
 | BukkitOfUtils | 1.19.5 | Required by XaeroSupport. It downloads libraries on startup. |
 | XaeroSupport | 0.0.1 | Server id 80744. Channels `xaeroworldmap:main` and `xaerominimap:main`. |
 | SyncmaticaPaper | 0.3.0 | Litematica sharing. Protocol 0.3.20. |
@@ -72,6 +73,14 @@ A beacon refreshes its effect only while its chunk is ticking. Simulation distan
 Installed jar: `/opt/minecraft/plugins/BeaconRange-1.0.0.jar`. SHA-256 `cafcc52728c428969418af23ec6157a2ea88572dd6d8458732ca7196c5c87b50`.
 
 Build with JDK 25 from `plugins/beacon-range` (`gradle build`). Paper API is `io.papermc.paper:paper-api:26.3.build.214-stable` from `https://repo.papermc.io/repository/maven-public/`. There is no Gradle wrapper in this repo. The admin workstation has no JDK. Do not leave a temporary JDK on the server.
+
+## Shared ender chest
+
+SharedEnderChest gives each player a choice: `/ec shared` makes ender chest blocks open one chest shared by everyone, and `/ec private` (the default) keeps vanilla. `/ec` shows the mode, and `/ec save` (op or console) writes the chest now. There is no remote opening. Permission `sharedenderchest.use` defaults to everyone. LuckPerms is not needed, but it can revoke that node later.
+
+The mode is stored in each player's data under `sharedenderchest:mode`. The chest is stored in `world/sharedenderchest/shared.dat`, inside the world on purpose: `restore-world` rolls it back together with player inventories. It is saved on close, on each world save (including the backup's `save-all flush`), and on shutdown, through a temp file and a move. If the file is unreadable at startup, the plugin disables itself and leaves the file alone. Do not delete that file to "fix" it. It is the only copy outside backups.
+
+Built jar `shared-enderchest-1.0.0.jar`, SHA-256 `6a670cbf236b19a24e78fabe8771b2d4797a0392c05fed78b2f3461b479f2cc9`.
 
 ## Clients
 
