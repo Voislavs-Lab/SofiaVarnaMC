@@ -41,7 +41,7 @@ Jars live in `/opt/minecraft/plugins`. A newly copied jar is not hot-loaded. Ins
 | Plugin | Version | Notes |
 | --- | --- | --- |
 | BeaconRange | 1.0.0 | Ours. Source is `plugins/beacon-range`. |
-| SharedEnderChest | 1.0.0 | Ours. Source is `plugins/shared-enderchest`. Built, not installed yet (needs the owner's yes and a restart). |
+| SharedEnderChest | 1.0.0 | Ours. Source is `plugins/shared-enderchest`. Installed 2026-11-21. |
 | BukkitOfUtils | 1.19.5 | Required by XaeroSupport. It downloads libraries on startup. |
 | XaeroSupport | 0.0.1 | Server id 80744. Channels `xaeroworldmap:main` and `xaerominimap:main`. |
 | SyncmaticaPaper | 0.3.0 | Litematica sharing. Protocol 0.3.20. |
@@ -80,7 +80,7 @@ SharedEnderChest gives each player a choice: `/ec shared` makes ender chest bloc
 
 The mode is stored in each player's data under `sharedenderchest:mode`. The chest is stored in `world/sharedenderchest/shared.dat`, inside the world on purpose: `restore-world` rolls it back together with player inventories. It is saved on close, on each world save (including the backup's `save-all flush`), and on shutdown, through a temp file and a move. If the file is unreadable at startup, the plugin disables itself and leaves the file alone. Do not delete that file to "fix" it. It is the only copy outside backups.
 
-Built jar `shared-enderchest-1.0.0.jar`, SHA-256 `6a670cbf236b19a24e78fabe8771b2d4797a0392c05fed78b2f3461b479f2cc9`.
+Installed jar: `/opt/minecraft/plugins/shared-enderchest-1.0.0.jar`. SHA-256 `6a670cbf236b19a24e78fabe8771b2d4797a0392c05fed78b2f3461b479f2cc9`.
 
 ## Clients
 
