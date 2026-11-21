@@ -1,6 +1,6 @@
 #!/bin/bash
 # SofiaVarna backups for Proxmox CT 111.
-# create freezes the world once. replicate-raid and replicate-gdrive copy that archive.
+# create freezes the world once. replicate-r2 copies that archive off the host.
 set -euo pipefail
 umask 077
 
@@ -64,7 +64,7 @@ on_exit() {
   fi
   if [[ "$rc" -ne 0 ]]; then
     rm -f "$stage_tar" "$stage_zst"
-    rm -rf "${LOCAL_DIR:-}/.incoming" "${RAID_DIR:-}/.incoming"
+    rm -rf "${LOCAL_DIR:-}/.incoming"
   fi
   exit "$rc"
 }
@@ -104,8 +104,8 @@ rcon_ok() {
 }
 
 ensure_dirs() {
-  mkdir -p "$LOCAL_DIR" "$LOCAL_DIR/.incoming" "$RAID_DIR"
-  chmod 700 "$LOCAL_DIR" "$RAID_DIR" "$LOCAL_DIR/.incoming"
+  mkdir -p "$LOCAL_DIR" "$LOCAL_DIR/.incoming"
+  chmod 700 "$LOCAL_DIR" "$LOCAL_DIR/.incoming"
   touch "$HISTORY_LOG"
   chmod 600 "$HISTORY_LOG"
 }
@@ -320,69 +320,12 @@ do_create() {
   log "created $LOCAL_DIR/$base mode=$mode bytes=$arch_bytes entries=$entries sha256=$hash"
 }
 
-do_replicate_raid() {
-  local newest base stem src age_h mtime now avail
-  ensure_dirs
-  sweep_incomplete "$LOCAL_DIR"
-  sweep_incomplete "$RAID_DIR"
-
-  newest=$(newest_basename "$LOCAL_DIR")
-  [[ -n "$newest" ]] || fail "no local archive to copy"
-  stem=${newest%.tar.zst}
-  for src in "$LOCAL_DIR/$newest" "$LOCAL_DIR/$newest.sha256" "$LOCAL_DIR/${stem}.manifest.txt"; do
-    [[ -f "$src" ]] || fail "missing sidecar $src"
-  done
-
-  if [[ -n "$(newest_basename "$RAID_DIR")" ]]; then
-    mtime=$(stat -c %Y "$RAID_DIR/$(newest_basename "$RAID_DIR")")
-    now=$(date +%s)
-    age_h=$(((now - mtime) / 3600))
-    if ((age_h < RAID_MIN_AGE_HOURS)); then
-      log "raid newest is ${age_h}h old (< ${RAID_MIN_AGE_HOURS}), skip"
-      exit 0
-    fi
-  fi
-
-  if [[ -f "$RAID_DIR/$newest" ]]; then
-    log "newest local archive already on raid ($newest)"
-    exit 0
-  fi
-
-  avail=$(free_kib "$RAID_DIR")
-  if ((avail < RAID_MIN_FREE_KIB)); then
-    fail "hdd-raid0 free ${avail} KiB is below ${RAID_MIN_FREE_KIB}"
-  fi
-
-  rm -rf "$RAID_DIR/.incoming"
-  mkdir -p "$RAID_DIR/.incoming"
-  chmod 700 "$RAID_DIR/.incoming"
-  cp -a "$LOCAL_DIR/$newest" "$LOCAL_DIR/$newest.sha256" "$LOCAL_DIR/${stem}.manifest.txt" "$RAID_DIR/.incoming/"
-  if [[ -f "$LOCAL_DIR/RESTORE.md" ]]; then
-    cp -a "$LOCAL_DIR/RESTORE.md" "$RAID_DIR/RESTORE.md"
-  fi
-  (
-    cd "$RAID_DIR/.incoming"
-    sha256sum -c "$newest.sha256"
-    zstd -t "$newest"
-  )
-  mv "$RAID_DIR/.incoming/$newest" "$RAID_DIR/$newest"
-  mv "$RAID_DIR/.incoming/$newest.sha256" "$RAID_DIR/$newest.sha256"
-  mv "$RAID_DIR/.incoming/${stem}.manifest.txt" "$RAID_DIR/${stem}.manifest.txt"
-  rm -rf "$RAID_DIR/.incoming"
-  (
-    cd "$RAID_DIR"
-    sha256sum -c "$newest.sha256"
-  )
-  prune_dir "$RAID_DIR" "$RAID_KEEP"
-  log "raid copy $RAID_DIR/$newest"
-}
-
 write_remote_rows() {
   # Writes "epoch stem" lines for remote archives. rclone must succeed.
   local out=$1
   local list line ts path stem epoch
   list=$(mktemp)
-  rclone lsf "${GDRIVE_REMOTE}" --files-only --format "tp" --separator ';' >"$list"
+  rclone lsf "${R2_REMOTE}" --files-only --format "tp" --separator ';' >"$list"
   : >"$out"
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$line" ]] || continue
@@ -411,41 +354,20 @@ load_remote_rows() {
 
 delete_remote_stem() {
   local stem=$1
-  rclone deletefile "${GDRIVE_REMOTE}${stem}.tar.zst"
-  rclone deletefile "${GDRIVE_REMOTE}${stem}.tar.zst.sha256" || true
-  rclone deletefile "${GDRIVE_REMOTE}${stem}.manifest.txt" || true
+  rclone deletefile "${R2_REMOTE}${stem}.tar.zst"
+  rclone deletefile "${R2_REMOTE}${stem}.tar.zst.sha256" || true
+  rclone deletefile "${R2_REMOTE}${stem}.manifest.txt" || true
   log "deleted remote $stem"
-}
-
-gdrive_free_bytes() {
-  local json
-  if ! json=$(rclone about "${GDRIVE_QUOTA_REMOTE}" --json 2>/dev/null); then
-    log "gdrive about failed, skipping free-space check"
-    echo -1
-    return 0
-  fi
-  printf '%s\n' "$json" | python3 -c 'import json,sys
-try:
-    d=json.load(sys.stdin)
-except Exception:
-    print(-1)
-    raise SystemExit(0)
-v=d.get("free")
-print(-1 if v is None else int(v))'
 }
 
 summarize_remote_rows() {
   local -n _rows=$1
   local -n _newest_epoch=$2
   local -n _newest_stem=$3
-  local -n _oldest_epoch=$4
-  local -n _oldest_stem=$5
-  local -n _count=$6
+  local -n _count=$4
   local row epoch stem_name
   _newest_epoch=0
   _newest_stem=""
-  _oldest_epoch=0
-  _oldest_stem=""
   _count=0
   for row in "${_rows[@]+"${_rows[@]}"}"; do
     [[ -n "$row" ]] || continue
@@ -456,21 +378,17 @@ summarize_remote_rows() {
       _newest_epoch=$epoch
       _newest_stem=$stem_name
     fi
-    if ((_oldest_epoch == 0 || epoch < _oldest_epoch)); then
-      _oldest_epoch=$epoch
-      _oldest_stem=$stem_name
-    fi
   done
 }
 
 prune_remote() {
   local -a rows=()
-  local count row stem_name guard _pe _ps _oe _os
+  local count row stem_name guard _pe _ps
   guard=0
   while true; do
     load_remote_rows rows
-    summarize_remote_rows rows _pe _ps _oe _os count
-    if ((count <= GDRIVE_KEEP || count <= 1)); then
+    summarize_remote_rows rows _pe _ps count
+    if ((count <= R2_KEEP || count <= 1)); then
       break
     fi
     row=${rows[0]}
@@ -478,33 +396,39 @@ prune_remote() {
     delete_remote_stem "$stem_name"
     guard=$((guard + 1))
     if ((guard > 20)); then
-      fail "gdrive prune did not shrink the remote"
+      fail "r2 prune did not shrink the remote"
     fi
   done
 }
 
-do_replicate_gdrive() {
-  local newest stem raid_zst now newest_epoch newest_stem oldest_epoch oldest_stem
-  local age min count free size local_md5 remote_md5
+do_replicate_r2() {
+  local newest stem src now newest_epoch newest_stem age min count check_dir
   local -a rows=()
 
-  if [[ "${GDRIVE_ENABLED}" != "1" ]]; then
-    log "gdrive disabled (GDRIVE_ENABLED=${GDRIVE_ENABLED})"
+  if [[ "${R2_ENABLED}" != "1" ]]; then
+    log "r2 disabled (R2_ENABLED=${R2_ENABLED})"
     exit 0
   fi
   command -v rclone >/dev/null || fail "rclone is not installed"
-  rclone listremotes | grep -Fxq "${GDRIVE_REMOTE}" || fail "rclone remote ${GDRIVE_REMOTE} is missing"
-  rclone listremotes | grep -Fxq "${GDRIVE_QUOTA_REMOTE}" || fail "rclone remote ${GDRIVE_QUOTA_REMOTE} is missing"
+  rclone listremotes | grep -Fxq "${R2_REMOTE}" || fail "rclone remote ${R2_REMOTE} is missing"
 
   ensure_dirs
-  newest=$(newest_basename "$RAID_DIR")
-  [[ -n "$newest" ]] || fail "no raid archive to upload"
+  rm -rf "$LOCAL_DIR"/.cryptcheck.*
+  sweep_incomplete "$LOCAL_DIR"
+  newest=$(newest_basename "$LOCAL_DIR")
+  [[ -n "$newest" ]] || fail "no local archive to upload"
   stem=${newest%.tar.zst}
-  raid_zst="$RAID_DIR/$newest"
-  [[ -f "$raid_zst" && -f "$RAID_DIR/$newest.sha256" && -f "$RAID_DIR/${stem}.manifest.txt" ]] || fail "raid archive set is incomplete"
+  for src in "$LOCAL_DIR/$newest" "$LOCAL_DIR/$newest.sha256" "$LOCAL_DIR/${stem}.manifest.txt"; do
+    [[ -f "$src" ]] || fail "missing sidecar $src"
+  done
+  (
+    cd "$LOCAL_DIR"
+    sha256sum -c "$newest.sha256"
+    zstd -t "$newest"
+  )
 
   load_remote_rows rows
-  summarize_remote_rows rows newest_epoch newest_stem oldest_epoch oldest_stem count
+  summarize_remote_rows rows newest_epoch newest_stem count
   now=$(date +%s)
 
   if [[ -n "$newest_stem" && "$newest_stem" == "$stem" ]]; then
@@ -514,48 +438,36 @@ do_replicate_gdrive() {
   fi
   if [[ -n "$newest_stem" ]]; then
     age=$((now - newest_epoch))
-    min=$((GDRIVE_MIN_AGE_DAYS * 86400))
+    min=$((R2_MIN_AGE_HOURS * 3600))
     if ((age < min)); then
-      log "remote newest ${newest_stem} is $((age / 3600))h old (< ${GDRIVE_MIN_AGE_DAYS}d), skip"
+      log "remote newest ${newest_stem} is $((age / 3600))h old (< ${R2_MIN_AGE_HOURS}h), skip"
       prune_remote
       exit 0
     fi
   fi
 
-  size=$(stat -c %s "$raid_zst")
-  free=$(gdrive_free_bytes)
-  if ((free >= 0 && free < size + 2 * 1024 * 1024 * 1024)); then
-    if [[ -n "$oldest_stem" && "$oldest_stem" != "$newest_stem" ]]; then
-      delete_remote_stem "$oldest_stem"
-      free=$(gdrive_free_bytes)
-    fi
-    if ((free >= 0 && free < size + 1024 * 1024 * 1024)); then
-      fail "google drive free ${free} bytes cannot fit $(basename "$raid_zst")"
-    fi
-  fi
-
-  rclone copyto "$raid_zst" "${GDRIVE_REMOTE}${newest}"
-  rclone copyto "$RAID_DIR/$newest.sha256" "${GDRIVE_REMOTE}${newest}.sha256"
-  rclone copyto "$RAID_DIR/${stem}.manifest.txt" "${GDRIVE_REMOTE}${stem}.manifest.txt"
+  rclone copyto "$LOCAL_DIR/$newest" "${R2_REMOTE}${newest}"
+  rclone copyto "$LOCAL_DIR/$newest.sha256" "${R2_REMOTE}${newest}.sha256"
+  rclone copyto "$LOCAL_DIR/${stem}.manifest.txt" "${R2_REMOTE}${stem}.manifest.txt"
   if [[ -f "$LOCAL_DIR/RESTORE.md" ]]; then
-    rclone copyto "$LOCAL_DIR/RESTORE.md" "${GDRIVE_REMOTE}RESTORE.md"
+    rclone copyto "$LOCAL_DIR/RESTORE.md" "${R2_REMOTE}RESTORE.md"
   fi
 
-  local check_dir
-  check_dir=$(mktemp -d -p "$RAID_DIR" .cryptcheck.XXXXXX)
+  # cryptcheck compares a whole directory, so hardlink just this set next to the archives.
+  check_dir=$(mktemp -d -p "$LOCAL_DIR" .cryptcheck.XXXXXX)
   chmod 700 "$check_dir"
-  ln "$raid_zst" "$check_dir/$newest"
-  ln "$RAID_DIR/$newest.sha256" "$check_dir/$newest.sha256"
-  ln "$RAID_DIR/${stem}.manifest.txt" "$check_dir/${stem}.manifest.txt"
-  if [[ -f "$RAID_DIR/RESTORE.md" ]]; then
-    ln "$RAID_DIR/RESTORE.md" "$check_dir/RESTORE.md"
+  ln "$LOCAL_DIR/$newest" "$check_dir/$newest"
+  ln "$LOCAL_DIR/$newest.sha256" "$check_dir/$newest.sha256"
+  ln "$LOCAL_DIR/${stem}.manifest.txt" "$check_dir/${stem}.manifest.txt"
+  if [[ -f "$LOCAL_DIR/RESTORE.md" ]]; then
+    ln "$LOCAL_DIR/RESTORE.md" "$check_dir/RESTORE.md"
   fi
-  if ! rclone cryptcheck "$check_dir" "${GDRIVE_REMOTE}"; then
+  if ! rclone cryptcheck --one-way "$check_dir" "${R2_REMOTE}"; then
     rm -rf "$check_dir"
-    fail "gdrive cryptcheck failed for $stem"
+    fail "r2 cryptcheck failed for $stem"
   fi
   rm -rf "$check_dir"
-  log "gdrive upload $stem cryptcheck=ok"
+  log "r2 upload $stem cryptcheck=ok"
   prune_remote
 }
 
@@ -669,28 +581,30 @@ EOF
 }
 
 do_status() {
-  local tier dir base mtime now age
+  local base mtime now age
+  local -a rows=()
+  local r_epoch r_stem r_count
   ensure_dirs
-  for tier in local raid; do
-    if [[ "$tier" == local ]]; then
-      dir=$LOCAL_DIR
-    else
-      dir=$RAID_DIR
-    fi
-    base=$(newest_basename "$dir" || true)
-    if [[ -z "$base" ]]; then
-      printf '%s: none\n' "$tier"
-      continue
-    fi
-    mtime=$(stat -c %Y "$dir/$base")
+  base=$(newest_basename "$LOCAL_DIR" || true)
+  if [[ -z "$base" ]]; then
+    printf 'local: none\n'
+  else
+    mtime=$(stat -c %Y "$LOCAL_DIR/$base")
     now=$(date +%s)
     age=$(((now - mtime) / 3600))
-    printf '%s: %s age_hours=%s count=%s\n' "$tier" "$base" "$age" "$(archive_basenames "$dir" | wc -l | awk '{print $1}')"
-  done
-  if [[ "${GDRIVE_ENABLED}" != "1" ]]; then
-    printf 'gdrive: disabled\n'
+    printf 'local: %s age_hours=%s count=%s\n' "$base" "$age" "$(archive_basenames "$LOCAL_DIR" | wc -l | awk '{print $1}')"
+  fi
+  if [[ "${R2_ENABLED}" != "1" ]]; then
+    printf 'r2: disabled\n'
+  elif ! load_remote_rows rows 2>/dev/null; then
+    printf 'r2: enabled remote=%s keep=%s (listing failed)\n' "$R2_REMOTE" "$R2_KEEP"
   else
-    printf 'gdrive: enabled remote=%s keep=%s\n' "$GDRIVE_REMOTE" "$GDRIVE_KEEP"
+    summarize_remote_rows rows r_epoch r_stem r_count
+    if [[ -z "$r_stem" ]]; then
+      printf 'r2: enabled remote=%s keep=%s, none uploaded\n' "$R2_REMOTE" "$R2_KEEP"
+    else
+      printf 'r2: %s age_hours=%s count=%s keep=%s\n' "$r_stem.tar.zst" "$((($(date +%s) - r_epoch) / 3600))" "$r_count" "$R2_KEEP"
+    fi
   fi
 }
 
@@ -702,8 +616,7 @@ do_ping_rcon() {
 usage() {
   cat <<EOF
 usage: minecraft-backup create
-       minecraft-backup replicate-raid
-       minecraft-backup replicate-gdrive
+       minecraft-backup replicate-r2
        minecraft-backup restore-test ARCHIVE
        minecraft-backup restore-world ARCHIVE [--apply]
        minecraft-backup status
@@ -719,8 +632,7 @@ main() {
   fi
   case "$cmd" in
     create) do_create ;;
-    replicate-raid) do_replicate_raid ;;
-    replicate-gdrive) do_replicate_gdrive ;;
+    replicate-r2) do_replicate_r2 ;;
     restore-test) do_restore_test "${2:-}" ;;
     restore-world) do_restore_world "${2:-}" "${3:-}" ;;
     status) do_status ;;

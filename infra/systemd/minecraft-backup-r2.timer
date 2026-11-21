@@ -1,11 +1,11 @@
 [Unit]
-Description=SofiaVarna daily RAID replicate check
+Description=SofiaVarna daily R2 replicate
 
 [Timer]
 OnCalendar=*-*-* 05:25:00
 Timezone=Europe/Sofia
 Persistent=true
-Unit=minecraft-backup-raid.service
+Unit=minecraft-backup-r2.service
 
 [Install]
 WantedBy=timers.target

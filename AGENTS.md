@@ -1,6 +1,6 @@
 # Agent notes
 
-Facts for agents working in this repo or on the live SofiaVarna server. Checked 2026-11-14.
+Facts for agents working in this repo or on the live SofiaVarna server. Checked 2026-11-14; backups and firewall updated 2026-11-21.
 
 This repo is public. Leave credentials, internal addresses, the whitelist, and backup tokens out of it. That includes `server.properties`, RCON and management secrets, rclone config, SSH private keys, and whitelist files. Read a secret on the host when a task needs it, and do not print it.
 
@@ -100,20 +100,23 @@ The live copy of the script is `/usr/local/sbin/minecraft-backup` on the Proxmox
 | Copy | When (Europe/Sofia) | Keep |
 | --- | --- | --- |
 | Local, `/var/backups/minecraft` | 05:00 and 17:00 | 4 |
-| RAID, `/mnt/hdd-raid0/minecraft-backups` | Newest local archive, at most every 46 hours, checked at 05:25 | 6 |
-| Google Drive, crypt remote | Sunday 05:45, newest RAID archive | 4 |
+| Cloudflare R2, crypt remote `sofiavarna-r2:` | Daily 05:25, newest local archive (skipped if R2's newest is under 20 hours old) | 7 |
+
+The owner decided on 2026-11-21: no backups on the RAID0 array, and R2 replaces Google Drive (Drive was out of space). Old copies on `/mnt/hdd-raid0/minecraft-backups` and Drive are no longer updated; delete them only when the owner asks.
 
 Archives are named `sofia-varna-YYYYmmdd-HHMM.tar.zst` and include `server.properties`. `restore-test` does not stop the game. `restore-world` only prints a plan unless `--apply` is passed. `--apply` stops the server and renames the live world. Do not pass `--apply` unless the owner asked for a restore.
 
-The world is frozen only on the local job: `save-on`, then `save-off`, `save-all flush`, tar, then `save-on`. If the service is up and RCON fails, the job aborts and does not archive. RAID and Drive copy a finished archive and do not read the live world. One lock covers all three jobs. Prune only after `zstd -t` and SHA-256, and never delete the newest archive. Skip the local job when the Proxmox root filesystem has under 15 GiB free, and the RAID copy when the array has under 50 GiB free.
+The world is frozen only on the local job: `save-on`, then `save-off`, `save-all flush`, tar, then `save-on`. If the service is up and RCON fails, the job aborts and does not archive. The R2 job copies a finished archive and does not read the live world. One lock covers both jobs. Prune only after `zstd -t` and SHA-256, and never delete the newest archive. Skip the local job when the Proxmox root filesystem has under 15 GiB free.
 
 RCON is reached with `/usr/local/bin/mcrcon` and `MCRCON_PASS` through `pct exec` on the Proxmox host. Do not SSH to the container for that, and do not publish RCON.
 
-Drive details are in `scripts/RESTORE.md`. The scope stays `drive.file`. The crypt remote stays `sofiavarna:` over `gdrive:SofiaVarna` inside that Drive folder. Do not switch the scope back to full Drive, and do not generate a new crypt password. The password file is `/root/minecraft-gdrive-crypt-pass`. It is a 44-character base64 string. If rclone treats it as already obscured, pass the obscured form with `--no-obscure`. Verify an upload with `rclone cryptcheck` of the files just uploaded, using hardlinks on the RAID filesystem. `rclone md5sum` does not work on a crypt remote. If `rclone about` fails, the script logs a warning and continues. Do not print `rclone.conf`, the crypt password, or an OAuth token.
+R2 details are in `scripts/RESTORE.md`. `r2-minecraft:` is an S3 remote (provider Cloudflare, EU jurisdiction endpoint, `no_check_bucket`) with a key scoped to the one bucket. `sofiavarna-r2:` is a crypt remote over `r2-minecraft:<bucket>/sofiavarna` with the same password and salt as the old `sofiavarna:` Drive remote; `scripts/minecraft-backup-setup-r2` creates both. Do not generate a new crypt password. The password file is `/root/minecraft-gdrive-crypt-pass` (a 44-character base64 string; if rclone treats it as already obscured, pass the obscured form with `--no-obscure`). Verify an upload with `rclone cryptcheck --one-way` of the files just uploaded, using hardlinks inside `/var/backups/minecraft`. `rclone md5sum` does not work on a crypt remote. Do not print `rclone.conf`, the crypt password, the R2 key, or an OAuth token. Keep the account id and bucket endpoint out of this repo.
 
-`md0` is RAID0. A copy on it dies with either WD disk, and so does the Plex library. Do not store archives under `media` or in the vzdump `dump/` directory.
+R2 has no hard spending cap. The owner has a Cloudflare budget alert. Keep retention short and do not upload more than one archive a day without asking.
 
-rclone on the host is 1.75.2 at `/usr/local/bin/rclone` and still uses rclone's shared Google client id. That client is due to stop working during 2026. Do not create a replacement client id unless the owner asks.
+`md0` is RAID0. A copy on it dies with either WD disk, and so does the Plex library. Do not store archives on it, under `media`, or in the vzdump `dump/` directory.
+
+rclone on the host is 1.75.2 at `/usr/local/bin/rclone`. The old `gdrive:` remote still uses rclone's shared Google client id, which is due to stop working during 2026. Do not create a replacement client id unless the owner asks.
 
 Leave Proxmox snapshots `pre-paper` and `wither-skeleton-farm` in place. `pre-paper` is the Paper cutover rollback point. The matching vzdump is named in `scripts/RESTORE.md`. Those are outside this rotation. No recurring vzdump job.
 
@@ -121,4 +124,6 @@ Leave Proxmox snapshots `pre-paper` and `wither-skeleton-farm` in place. `pre-pa
 
 Tell the owner and wait for an explicit yes before an install, a plugin or Minecraft upgrade, a restart, a kick, or a world restore.
 
-Do not change the host firewall, CPU, or RAM. Do not expose RCON any further.
+Do not change the CPU or RAM. Do not expose RCON any further.
+
+Firewall: since 2026-11-21 CT 111 is in the Proxmox firewall security group `dmz-games` (owner-approved). Inbound is unchanged (policy ACCEPT), so players connect as before. Outbound from the container may reach the internet and the gateway's DHCP, but not other LAN hosts. RCON and backups still work because they go through `pct exec` on the host, not the network. Do not change those rules without the owner. If a plugin needs to reach a LAN service, ask first.
