@@ -1,0 +1,21 @@
+name: GameModeSwitch
+version: 1.0.0
+main: com.sofiavarna.gamemodeswitch.GameModeSwitchPlugin
+api-version: '26.3'
+description: Lets a player switch themselves between survival and spectator without op
+author: SofiaVarna
+commands:
+  spectator:
+    description: Switch yourself to spectator mode
+    usage: /spec
+    aliases: [spec]
+    permission: gamemodeswitch.use
+  survival:
+    description: Switch yourself to survival mode
+    usage: /surv
+    aliases: [surv]
+    permission: gamemodeswitch.use
+permissions:
+  gamemodeswitch.use:
+    description: Use /spec and /surv on yourself
+    default: false

@@ -1,6 +1,6 @@
 # Agent notes
 
-Facts for agents working in this repo or on the live SofiaVarna server. Checked 2026-11-14; backups and firewall updated 2026-11-21.
+Facts for agents working in this repo or on the live SofiaVarna server. Checked 2026-11-14. Backups, firewall, and permissions updated 2026-11-21.
 
 This repo is public. Leave credentials, internal addresses, the whitelist, and backup tokens out of it. That includes `server.properties`, RCON and management secrets, rclone config, SSH private keys, and whitelist files. Read a secret on the host when a task needs it, and do not print it.
 
@@ -42,15 +42,38 @@ Jars live in `/opt/minecraft/plugins`. A newly copied jar is not hot-loaded. Ins
 | --- | --- | --- |
 | BeaconRange | 1.0.0 | Ours. Source is `plugins/beacon-range`. |
 | SharedEnderChest | 1.0.0 | Ours. Source is `plugins/shared-enderchest`. Installed 2026-11-21. |
+| GameModeSwitch | 1.0.0 | Ours. Source is `plugins/gamemode-switch`. `/spec` and `/surv` for yourself only. Installed 2026-11-21. |
+| LuckPerms | 5.5.91 | Bukkit build from download.luckperms.net. YAML storage. See "Permissions". Installed 2026-11-21. |
+| CopperGolemClerk | 3.2.0 | Copper golem sorting. Player nodes default to everyone. `coppergolemclerk.alerts` is granted to `default`. |
 | BukkitOfUtils | 1.19.5 | Required by XaeroSupport. It downloads libraries on startup. |
 | XaeroSupport | 0.0.1 | Server id 80744. Channels `xaeroworldmap:main` and `xaerominimap:main`. |
 | SyncmaticaPaper | 0.3.0 | Litematica sharing. Protocol 0.3.20. |
 | ServuxPluginEdition | 0.2.1 | Litematica Easy Place. |
 | VoxyServerSide | 0.20.0 | LOD terrain and far-player positions. |
 
-Only BeaconRange is source in this repo. Do not vendor the other jars.
+Only BeaconRange, SharedEnderChest, and GameModeSwitch are source in this repo. Do not vendor the other jars.
 
-Leave these uninstalled unless the owner asks: VeryMcProto, WorldEdit, Essentials, claim plugins, LuckPerms, Geyser, Carpet.
+Leave these uninstalled unless the owner asks: VeryMcProto, WorldEdit, Essentials, claim plugins, Geyser, Carpet.
+
+## Permissions
+
+The owner's account is the only op (level 4). The other players were de-opped on 2026-11-21. The old file is `/opt/minecraft/ops.json.pre-luckperms`. Player names stay out of this repo, the same as the whitelist.
+
+Everyone is in the LuckPerms group `default`. That group has:
+
+| Node | Gives |
+| --- | --- |
+| `minecraft.command.teleport` | Full vanilla `/tp` and `/teleport`: to players, to coordinates, and moving others |
+| `gamemodeswitch.use` | `/spec` and `/surv` on yourself |
+| `coppergolemclerk.alerts` | CopperGolemClerk full-chest and lost-golem alerts |
+
+Do not grant `minecraft.command.gamemode` to `default`. It is one node for every mode and every target, so it would allow creative. Non-ops cannot use F3+F4 or F3+N.
+
+Storage is YAML in `plugins/LuckPerms/yaml-storage`, which the backup tar includes. `infra/luckperms/default-group.yml` mirrors the group. To add a node, run `lp group default permission set <node> true` over RCON. LuckPerms prints its replies to the console log, not to the RCON response, so read the result from the group file. Then copy the file back to `infra/`.
+
+Installed jars: `LuckPerms-Bukkit-5.5.91.jar` SHA-256 `2a6834c51830b133ec8763703391b20240f7a3b4748746503251a45d70cf1b39`. `gamemode-switch-1.0.0.jar` SHA-256 `8c28cebb4440cd37675415081c18f1894c124030d9abfab01f057e2c94a40486`. `CopperGolemClerk-3.2.0.jar` SHA-256 `cd51869f7eece3d517d425e5acf5e5733c4c4dd6452f9d9cffa24591eca22fe2`.
+
+Rollback: remove the LuckPerms and gamemode-switch jars, put `ops.json.pre-luckperms` back as `ops.json`, then restart (the owner says yes first).
 
 XaeroSupport logs a legacy api-version warning on 26.3 and still enables. Leave it installed. The id 80744 is the client's map folder `mw$80744`. Maps and waypoints stay on each player's computer. The connect address has to stay `mc.nikola-voislav.com`, or the client starts a new map. XaeroSupport does not sync explored terrain.
 
