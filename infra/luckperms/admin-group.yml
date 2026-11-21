@@ -1,0 +1,9 @@
+name: admin
+permissions:
+- beaconrange.admin
+- coppergolemclerk.admin
+- minecraft.command.deop
+- minecraft.command.op
+- sharedenderchest.admin
+parents:
+- default
