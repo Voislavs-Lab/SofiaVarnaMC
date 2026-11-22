@@ -50,7 +50,7 @@ Jars live in `/opt/minecraft/plugins`. A newly copied jar is not hot-loaded. Ins
 | SyncmaticaPaper | 0.3.0 | Litematica sharing. Protocol 0.3.20. |
 | ServuxPluginEdition | 0.2.1 | Litematica Easy Place. |
 | VoxyServerSide | 0.20.0 | LOD terrain and far-player positions. |
-| JEIRecipeBridge | 3.0.0 | Sends server recipes to JEI clients. See "JEI". Installed 2026-11-22. |
+| JReiProxyServer | 26.3.0 | JEI/REI recipe sync and the "+" recipe transfer. Cheat mode off. See "JEI". Installed 2026-11-22. |
 
 Only BeaconRange, SharedEnderChest, and GameModeSwitch are source in this repo. Do not vendor the other jars.
 
@@ -86,11 +86,13 @@ Voxy config is `plugins/VoxyServerSide/vss-server-config.yaml`. `generation.enab
 
 ## JEI
 
-Since Minecraft 1.21.2 the server no longer sends the recipe list to clients, and Paper does not send it on the mod-loader channels either. Without help, JEI says "This server does not provide recipes to JEI" and shows only the recipes bundled with the client. JEIRecipeBridge (Mrbysco, MIT, [Modrinth](https://modrinth.com/plugin/jei-recipe-bridge)) sends the server's recipes on `fabric:recipe_sync` and `neoforge:recipe_content`, so JEI shows what the server actually has. It has no config, no commands, and no permissions. Clients need no extra mod.
+Since Minecraft 1.21.2 the server no longer sends the recipe list to clients, and Paper does not send it on the mod-loader channels either. Without help, JEI says "This server does not provide recipes to JEI" and shows only the recipes bundled with the client. JReiProxyServer (VanillaChanny, MIT, [Modrinth](https://modrinth.com/plugin/jreiproxyserver)) sends the server's recipes on `fabric:recipe_sync` and `neoforge:recipe_content`, and it answers JEI's and REI's recipe-transfer packets. That transfer is the "+" (move items) button, which otherwise says the server must have JEI installed. At boot it logs about 2,000 cached recipes and "Listening on 6 JEI and 5 REI channels". Clients need no extra mod.
 
-It is built against Paper internals for one Minecraft version. Before a Paper or Minecraft upgrade, get the matching build, or JEI goes back to client-only recipes. The fallback is JReiProxyServer ([Modrinth](https://modrinth.com/plugin/jreiproxyserver)). It also adds JEI/REI cheat mode, so check its permissions before installing it.
+Config is `plugins/JReiProxyServer/config.yml`. `cheat-mode.enabled` is false, at the owner's choice on 2026-11-22: nobody, not even an op, can take or delete items from JEI or REI. Keep it off. `recipe-transfer.enabled` and `recipe-sync.enabled` are true. Players can run `/jei resync` (30s cooldown). `/jreiproxy reload|resync|info` needs `jreiproxyserver.admin` (op). JEI always prints its "does not provide recipes" warning once on join, and the plugin's chat line after it means the sync arrived.
 
-Installed jar: `/opt/minecraft/plugins/JEI-Recipe-Bridge-3.0.0.jar`. SHA-256 `849c7a27522cad006575d5c94da1b660a5605e69852d2069d7a07a7bb3ce188e`. Rollback: remove the jar and restart (the owner says yes first).
+It is built against Paper internals for one Minecraft version. Before a Paper or Minecraft upgrade, get the matching build, or JEI goes back to client-only recipes and the "+" button stops working. JEIRecipeBridge (Mrbysco, [Modrinth](https://modrinth.com/plugin/jei-recipe-bridge)) was tried first on 2026-11-22. It syncs recipes only, with no transfer, so it was replaced. Do not run both.
+
+Installed jar: `/opt/minecraft/plugins/jreiproxyserver-26.3.0.jar`. SHA-256 `4ce9f9f8a68f60ef3f7c43b84b1d3992a45e4684edbedf2f3b1b85d367b12fcf`. Rollback: remove the jar and restart (the owner says yes first).
 
 ## Beacon range
 
