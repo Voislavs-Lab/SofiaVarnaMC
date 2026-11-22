@@ -50,6 +50,7 @@ Jars live in `/opt/minecraft/plugins`. A newly copied jar is not hot-loaded. Ins
 | SyncmaticaPaper | 0.3.0 | Litematica sharing. Protocol 0.3.20. |
 | ServuxPluginEdition | 0.2.1 | Litematica Easy Place. |
 | VoxyServerSide | 0.20.0 | LOD terrain and far-player positions. |
+| JEIRecipeBridge | 3.0.0 | Sends server recipes to JEI clients. See "JEI". Installed 2026-11-22. |
 
 Only BeaconRange, SharedEnderChest, and GameModeSwitch are source in this repo. Do not vendor the other jars.
 
@@ -83,7 +84,13 @@ Servux has Easy Place on. Paste, tweak data, and seed sharing are off. It can lo
 
 Voxy config is `plugins/VoxyServerSide/vss-server-config.yaml`. `generation.enabled` is false, so LOD requests do not generate new chunks. `request_no_map_ingestion` is true. LOD radius is 512 chunks in the overworld and the end, and 64 in the nether. Far players are mode `on`, from 0 to 2048 blocks, every 10 ticks. Those are position snapshots. They do not simulate the distant player. Command is `/vsslod`. `/vsslod reload` applies the config without a restart.
 
-JEI is a client mod. This server does not send its recipe list.
+## JEI
+
+Since Minecraft 1.21.2 the server no longer sends the recipe list to clients, and Paper does not send it on the mod-loader channels either. Without help, JEI says "This server does not provide recipes to JEI" and shows only the recipes bundled with the client. JEIRecipeBridge (Mrbysco, MIT, [Modrinth](https://modrinth.com/plugin/jei-recipe-bridge)) sends the server's recipes on `fabric:recipe_sync` and `neoforge:recipe_content`, so JEI shows what the server actually has. It has no config, no commands, and no permissions. Clients need no extra mod.
+
+It is built against Paper internals for one Minecraft version. Before a Paper or Minecraft upgrade, get the matching build, or JEI goes back to client-only recipes. The fallback is JReiProxyServer ([Modrinth](https://modrinth.com/plugin/jreiproxyserver)). It also adds JEI/REI cheat mode, so check its permissions before installing it.
+
+Installed jar: `/opt/minecraft/plugins/JEI-Recipe-Bridge-3.0.0.jar`. SHA-256 `849c7a27522cad006575d5c94da1b660a5605e69852d2069d7a07a7bb3ce188e`. Rollback: remove the jar and restart (the owner says yes first).
 
 ## Beacon range
 
